@@ -7,19 +7,16 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-use esp_hal::analog::adc::{
-    Adc, AdcCalLine, AdcCalScheme, AdcChannel, AdcConfig, AdcPin, Attenuation, RegisterAccess,
-};
-use esp_hal::peripherals::{ADC1, ADC2};
+use esp_hal::analog::adc::{Adc, AdcCalLine, AdcConfig, Attenuation};
+use esp_hal::peripherals::ADC2;
 use esp_hal::system::Stack;
 use esp_hal::timer::timg::TimerGroup;
 
 use defmt::info;
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
-use esp_hal::interrupt::RunLevel::ThreadMode;
+use esp_hal::main;
 use esp_hal::time::{Duration, Instant};
-use esp_hal::{Blocking, main};
 use esp_println as _;
 use static_cell::ConstStaticCell;
 
