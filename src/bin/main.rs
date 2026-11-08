@@ -7,6 +7,10 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
+use esp_hal::analog::adc::{
+    Adc, AdcCalLine, AdcCalScheme, AdcChannel, AdcConfig, AdcPin, Attenuation, RegisterAccess,
+};
+use esp_hal::peripherals::{ADC1, ADC2};
 use esp_hal::system::Stack;
 use esp_hal::timer::timg::TimerGroup;
 
@@ -14,8 +18,8 @@ use defmt::info;
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::interrupt::RunLevel::ThreadMode;
-use esp_hal::main;
 use esp_hal::time::{Duration, Instant};
+use esp_hal::{Blocking, main};
 use esp_println as _;
 use static_cell::ConstStaticCell;
 
@@ -50,10 +54,19 @@ fn main() -> ! {
         },
     );
 
+    let analog_pin = peripherals.GPIO19;
+    let mut adc1_config = AdcConfig::<ADC2>::new();
+    let mut pin =
+        adc1_config.enable_pin_with_cal::<_, AdcCalLine<ADC2>>(analog_pin, Attenuation::_11dB);
+    let mut adc1 = Adc::new(peripherals.ADC2, adc1_config);
+
     loop {
-        info!("Hello world from the first core!");
         let delay_start = Instant::now();
-        while delay_start.elapsed() < Duration::from_millis(500) {}
+
+        let pin_value = adc1.read_blocking(&mut pin);
+        info!("{} mV", pin_value as u32 * 3300 / 3629);
+
+        while delay_start.elapsed() < Duration::from_millis(5) {}
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.2.2/examples

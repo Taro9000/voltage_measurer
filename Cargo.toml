@@ -9,7 +9,7 @@ name = "voltage_measurer"
 path = "./src/bin/main.rs"
 
 [dependencies]
-esp-hal = { version = "~1.2.2", features = ["defmt", "esp32s3"] }
+esp-hal = { version = "~1.2.2", features = ["defmt", "esp32s3", "unstable"] }
 
 
 defmt                  = "1.0.1"
@@ -24,6 +24,7 @@ esp-backtrace = { version = "0.20.0", features = [
 esp-println = { version = "0.18.0", features = ["defmt-espflash", "esp32s3"] }
 esp-rtos = { version = "0.4.0", features = ["defmt", "embassy", "esp32s3"] }
 static_cell = "2.1.1"
+nb = "1.1.0"
 
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
