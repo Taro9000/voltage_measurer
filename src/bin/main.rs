@@ -49,14 +49,11 @@ esp_bootloader_esp_idf::esp_app_desc!();
     clippy::large_stack_frames,
     reason = "it's not unusual to allocate larger buffers etc. in main"
 )]
+static VOLTAGE: AtomicU16 = AtomicU16::new(0);
 #[main]
 fn main() -> ! {
     // generator version: 2.0.0
     // generator parameters: -o esp32s3 -o defmt -o esp-backtrace -o zed
-
-    let mut voltage = AtomicU16::new(0);
-    let voltage_ptr = &mut voltage as *mut AtomicU16;
-    let atomic = unsafe { AtomicU16::from_ptr(voltage_ptr.cast::<u16>()) };
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
@@ -68,7 +65,11 @@ fn main() -> ! {
         peripherals.CPU_CTRL,
         peripherals.FROM_CPU_INTR1,
         STACK.take(),
-        move || {
+        #[allow(
+            clippy::large_stack_frames,
+            reason = "it's not unusual to allocate larger buffers etc. in the second core"
+        )]
+        || {
             let _vext_ctrl = Output::new(
                 peripherals.GPIO36,
                 Level::Low, // LOW enables the 3.3V Vext rail
@@ -133,7 +134,7 @@ fn main() -> ! {
                 .unwrap();
                 x -= TEXT_WIDTH;
 
-                let mut voltage = atomic.load(Ordering::Relaxed);
+                let mut voltage = VOLTAGE.load(Ordering::Relaxed);
                 if voltage == 0 {
                     x -= TEXT_WIDTH;
                     Text::with_baseline(
@@ -187,7 +188,7 @@ fn main() -> ! {
         const N: u64 = 1024;
         let pin_values: u64 = (0..N).map(|_| adc1.read_blocking(&mut pin) as u64).sum();
         let new_voltage = (pin_values * 3300 / N / 3629) as u16;
-        voltage.store(new_voltage, Ordering::Relaxed);
+        VOLTAGE.store(new_voltage, Ordering::Relaxed);
         info!("{} mV {:?}", new_voltage, pin_delay_start.elapsed());
     }
 
