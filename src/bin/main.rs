@@ -7,7 +7,7 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU16, Ordering};
 
 use embedded_graphics::mono_font::jis_x0201::FONT_10X20;
 use esp_hal::analog::adc::{Adc, AdcCalLine, AdcConfig, Attenuation};
@@ -21,6 +21,8 @@ use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::main;
 use esp_hal::time::{Duration, Instant};
+use esp_hal::uart::Config as UartConfig;
+use esp_hal::uart::Uart;
 use esp_println as _;
 use static_cell::ConstStaticCell;
 
@@ -45,11 +47,16 @@ use embedded_graphics::{
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
+static VOLTAGE: AtomicU16 = AtomicU16::new(0);
+/// 0. Disconnected.
+/// 1. Connecting...
+/// 2. Connected!
+static CONNECTED: AtomicU8 = AtomicU8::new(0);
+
 #[allow(
     clippy::large_stack_frames,
     reason = "it's not unusual to allocate larger buffers etc. in main"
 )]
-static VOLTAGE: AtomicU16 = AtomicU16::new(0);
 #[main]
 fn main() -> ! {
     // generator version: 2.0.0
@@ -113,8 +120,8 @@ fn main() -> ! {
             const DISPLAY_WIDTH: i32 = 128;
             const DISPLAY_HEIGHT: i32 = 64;
             const TEXT_WIDTH: i32 = 10;
-            const TEXT_HEIGHT: i32 = 20;
-            const VERTICAL_POSITION: i32 = (DISPLAY_HEIGHT - TEXT_HEIGHT) / 2;
+            const _TEXT_HEIGHT: i32 = 20;
+            const VERTICAL_POSITION: i32 = DISPLAY_HEIGHT / 2;
             let text_style = MonoTextStyleBuilder::new()
                 .font(&FONT_10X20)
                 .text_color(BinaryColor::On)
@@ -122,6 +129,19 @@ fn main() -> ! {
             loop {
                 let delay_start = Instant::now();
                 display.clear_buffer();
+                Text::with_baseline(
+                    match CONNECTED.load(Ordering::Relaxed) {
+                        0 => "Disconnected.",
+                        1 => "Connecting...",
+                        2 => "Connected!",
+                        _ => "What?!",
+                    },
+                    Point::new(0, 0),
+                    text_style,
+                    Baseline::Top,
+                )
+                .draw(&mut display)
+                .unwrap();
 
                 let mut x = DISPLAY_WIDTH - (TEXT_WIDTH * 2);
                 Text::with_baseline(
@@ -172,10 +192,19 @@ fn main() -> ! {
                     }
                 }
                 display.flush().unwrap();
-                info!("Text delay: {:?}", &delay_start.elapsed());
+                // info!("Text delay: {:?}", &delay_start.elapsed());
             }
         },
     );
+
+    let (mut rx, mut tx) = Uart::new(peripherals.UART0, UartConfig::default())
+        .unwrap()
+        .with_rx(peripherals.GPIO44) // ✅ Connect RX to GPIO44
+        .with_tx(peripherals.GPIO43)
+        .split();
+    let mut buf = [0u8; 187];
+    let mut buf_byte = [0u8; 1];
+    let mut buf_change_index = 0;
 
     let analog_pin = peripherals.GPIO19;
     let mut adc1_config = AdcConfig::<ADC2>::new();
@@ -183,14 +212,89 @@ fn main() -> ! {
         adc1_config.enable_pin_with_cal::<_, AdcCalLine<ADC2>>(analog_pin, Attenuation::_11dB);
     let mut adc1 = Adc::new(peripherals.ADC2, adc1_config);
 
+    const N: u64 = 1; // 1024;
     loop {
         let pin_delay_start = Instant::now();
-        const N: u64 = 1024;
-        let pin_values: u64 = (0..N).map(|_| adc1.read_blocking(&mut pin) as u64).sum();
-        let new_voltage = (pin_values * 3300 / N / 3629) as u16;
-        VOLTAGE.store(new_voltage, Ordering::Relaxed);
-        info!("{} mV {:?}", new_voltage, pin_delay_start.elapsed());
+        let read_voltage = || adc1.read_blocking(&mut pin);
+        match CONNECTED.load(Ordering::Relaxed) {
+            0 => {
+                let new_voltage = average_adc_readings_over_n_times::<1024>(read_voltage);
+                VOLTAGE.store(new_voltage, Ordering::Relaxed);
+                if !rx.read_ready() {
+                    CONNECTED.store(1, Ordering::Relaxed);
+                }
+            }
+            1 => {
+                let new_voltage = average_adc_readings_over_n_times::<1>(read_voltage);
+                VOLTAGE.store(new_voltage, Ordering::Relaxed);
+                let Ok(length) = rx.read_buffered(&mut buf_byte) else {
+                    CONNECTED.store(0, Ordering::Relaxed);
+                    continue;
+                };
+                if length == 0 {
+                    continue;
+                }
+                let buf_byte = buf_byte[0];
+                if buf_byte != b'\n' && buf_change_index < buf.len() {
+                    buf[buf_change_index] = buf_byte;
+                    buf_change_index += 1;
+                    continue;
+                }
+                let msg = &buf[..buf_change_index];
+                buf_change_index = 0;
+
+                if msg == b"Umm, h-hi~. \
+                    Is this perhaps by any chance a Capacitive Soil Moisture Sensor Module Esp32 relayed \
+                    that just so happens to be made by Taro900?. \
+                    No offense if not my d-dear slave~. *blushes*" {
+                    let Ok(_) = tx.write(b"Indeed, master.\n") else {
+                        CONNECTED.store(0, Ordering::Relaxed);continue };
+                    let Ok(_) = tx.flush() else {
+                        CONNECTED.store(0, Ordering::Relaxed);continue };
+                    CONNECTED.store(2, Ordering::Relaxed);
+                } else {
+                    let _ = tx.write(b"Got: ");
+                    let _ = tx.write(msg) ;
+                    let _ = tx.write(b"\n");
+                    let _ = tx.flush();
+                }
+            }
+            2 => {
+                let new_voltage = average_adc_readings_over_n_times::<1024>(read_voltage);
+                VOLTAGE.store(new_voltage, Ordering::Relaxed);
+                let [first, last] = new_voltage.to_ne_bytes();
+                let Ok(_) = tx.write(b"\t") else {
+                    CONNECTED.store(0, Ordering::Relaxed);
+                    continue;
+                };
+                let Ok(_) = tx.write(&[first]) else {
+                    CONNECTED.store(0, Ordering::Relaxed);
+                    continue;
+                };
+                let Ok(_) = tx.write(b"\t") else {
+                    CONNECTED.store(0, Ordering::Relaxed);
+                    continue;
+                };
+                let Ok(_) = tx.write(&[last]) else {
+                    CONNECTED.store(0, Ordering::Relaxed);
+                    continue;
+                };
+                let Ok(_) = tx.write(b"\n") else {
+                    CONNECTED.store(0, Ordering::Relaxed);
+                    continue;
+                };
+            }
+            _ => {
+                CONNECTED.store(1, Ordering::Relaxed);
+            }
+        }
+        // info!("{} mV {:?}", new_voltage, pin_delay_start.elapsed());
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.2.2/examples
+}
+
+fn average_adc_readings_over_n_times<const N: u64>(mut f: impl FnMut() -> u16) -> u16 {
+    let pin_values: u64 = (0..N).map(|_| f() as u64).sum();
+    (pin_values * 3300 / N / 3629) as u16
 }
